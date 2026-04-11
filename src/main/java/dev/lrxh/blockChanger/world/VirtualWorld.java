@@ -20,50 +20,50 @@ import java.util.stream.Stream;
 
 @SuppressWarnings({"unused"})
 public class VirtualWorld {
-  private final ServerLevel level;
+    private final ServerLevel level;
 
-  public VirtualWorld(ServerLevel level) {
-    this.level = level;
-  }
-
-  public World getWorld() {
-    return level.getWorld();
-  }
-
-  public void unload() {
-    try {
-      level.getChunkSource().getDataStorage().close();
-      level.moonrise$getChunkTaskScheduler().chunkHolderManager.close(false, false);
-      level.levelStorageAccess.close();
-    } catch (Exception ignored) {
+    public VirtualWorld(ServerLevel level) {
+        this.level = level;
     }
 
-    MinecraftServer.getServer().removeLevel(level);
-    BlockChanger.removeVirtualWorld(this);
+    public World getWorld() {
+        return level.getWorld();
+    }
 
-    Path worldPath = MinecraftServer.getServer()
-      .server.getWorldContainer()
-      .toPath()
-      .resolve(level.getWorld().getName());
-
-    CompletableFuture.runAsync(() -> {
-      if (Files.exists(worldPath)) {
-        try (Stream<Path> paths = Files.walk(worldPath)) {
-          paths.sorted(Comparator.reverseOrder())
-            .forEach(path -> {
-              try {
-                Files.delete(path);
-              } catch (IOException e) {
-                BlockChanger.log(e.getMessage());
-              }
-            });
-        } catch (IOException e) {
-          BlockChanger.log(e.getMessage());
+    public void unload() {
+        try {
+            level.getChunkSource().getDataStorage().close();
+            level.moonrise$getChunkTaskScheduler().chunkHolderManager.close(false, false);
+            level.levelStorageAccess.close();
+        } catch (Exception ignored) {
         }
-      }
-    });
-  }
-  public void paste(CuboidSnapshot snapshot) {
-    BlockChanger.paste(getWorld(), snapshot);
-  }
+
+        MinecraftServer.getServer().removeLevel(level);
+        BlockChanger.removeVirtualWorld(this);
+
+        Path worldPath = MinecraftServer.getServer()
+                .server.getWorldContainer()
+                .toPath()
+                .resolve(level.getWorld().getName());
+
+        CompletableFuture.runAsync(() -> {
+            if (Files.exists(worldPath)) {
+                try (Stream<Path> paths = Files.walk(worldPath)) {
+                    paths.sorted(Comparator.reverseOrder())
+                            .forEach(path -> {
+                                try {
+                                    Files.delete(path);
+                                } catch (IOException e) {
+                                    BlockChanger.log(e.getMessage());
+                                }
+                            });
+                } catch (IOException e) {
+                    BlockChanger.log(e.getMessage());
+                }
+            }
+        });
+    }
+    public void paste(CuboidSnapshot snapshot) {
+        BlockChanger.paste(getWorld(), snapshot);
+    }
 }

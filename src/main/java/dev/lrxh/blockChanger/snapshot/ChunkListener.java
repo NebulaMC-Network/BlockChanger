@@ -12,24 +12,24 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.util.Set;
 
 public class ChunkListener implements Listener {
-  private final JavaPlugin plugin;
+    private final JavaPlugin plugin;
 
-  public ChunkListener(JavaPlugin plugin) {
-    this.plugin = plugin;
-  }
+    public ChunkListener(JavaPlugin plugin) {
+        this.plugin = plugin;
+    }
 
-  @EventHandler(priority = EventPriority.MONITOR)
-  public void onChunkLoad(ChunkLoadEvent event) {
-    final ChunkPos chunkPos = new ChunkPos(event.getChunk().getX(), event.getChunk().getZ());
-    final QueuedChunkSnapshot queuedChunkSnapshot = SnapshotService.getSnapshot(
-      event.getWorld(), chunkPos);
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onChunkLoad(ChunkLoadEvent event) {
+        final ChunkPos chunkPos = new ChunkPos(event.getChunk().getX(), event.getChunk().getZ());
+        final QueuedChunkSnapshot queuedChunkSnapshot = SnapshotService.getSnapshot(
+                event.getWorld(), chunkPos);
 
-    if (queuedChunkSnapshot == null) return;
-    if (!event.getChunk().getWorld().getName().equals(queuedChunkSnapshot.worldName())) return;
+        if (queuedChunkSnapshot == null) return;
+        if (!event.getChunk().getWorld().getName().equals(queuedChunkSnapshot.worldName())) return;
 
-    Bukkit.getScheduler().runTask(plugin, () -> {
-      SnapshotService.removeSnapshot(event.getWorld(), chunkPos);
-      BlockChanger.restoreChunkBlockSnapshot(event.getChunk(), queuedChunkSnapshot.snapshot(), true).thenRun(() -> BlockChanger.updateLighting(Set.of(event.getChunk())));
-    });
-  }
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            SnapshotService.removeSnapshot(event.getWorld(), chunkPos);
+            BlockChanger.restoreChunkBlockSnapshot(event.getChunk(), queuedChunkSnapshot.snapshot(), true).thenRun(() -> BlockChanger.updateLighting(Set.of(event.getChunk())));
+        });
+    }
 }
