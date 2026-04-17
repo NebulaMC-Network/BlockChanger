@@ -29,12 +29,17 @@ public class CuboidSnapshot {
         final int minChunkZ = Math.min(pos1.getChunk().getZ(), pos2.getChunk().getZ());
         final int maxChunkZ = Math.max(pos1.getChunk().getZ(), pos2.getChunk().getZ());
 
+        final int minY = Math.min(pos1.getBlockY(), pos2.getBlockY());
+        final int maxY = Math.max(pos1.getBlockY(), pos2.getBlockY());
+
         final int totalChunks = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
 
-        return loadChunksAndSnapshots(totalChunks, (x, z) -> world.getChunkAtAsync(x, z)
-                        .thenApplyAsync(chunk -> Map.entry(chunk, BlockChanger.createChunkBlockSnapshot(chunk)), BlockChanger.EXECUTOR),
-                minChunkX, maxChunkX, minChunkZ, maxChunkZ
-        );
+        return loadChunksAndSnapshots(totalChunks,
+          (x, z) -> world.getChunkAtAsync(x, z)
+            .thenApplyAsync(chunk -> Map.entry(chunk,
+                BlockChanger.createChunkBlockSnapshot(chunk, minY, maxY)),
+              BlockChanger.EXECUTOR),
+          minChunkX, maxChunkX, minChunkZ, maxChunkZ);
     }
 
     private static CompletableFuture<CuboidSnapshot> loadChunksAndSnapshots(

@@ -119,16 +119,23 @@ public class BlockChanger {
      * @return a {@link ChunkSectionSnapshot} containing copied sections and the chunk position
      */
     @InternalApi
-    public static ChunkSectionSnapshot createChunkBlockSnapshot(final Chunk chunk) {
+    public static ChunkSectionSnapshot createChunkBlockSnapshot(final Chunk chunk, final int minY, final int maxY) {
         final CraftChunk craftChunk = (CraftChunk) chunk;
         final ChunkAccess chunkAccess = craftChunk.getHandle(ChunkStatus.FULL);
         final ChunkPos position = chunkAccess.getPos();
         final Level level = craftChunk.getCraftWorld().getHandle();
-
         final LevelChunkSection[] sections = chunkAccess.getSections();
+
+        final int minSection = level.getSectionIndex(minY);
+        final int maxSection = level.getSectionIndex(maxY);
+
         final LevelChunkSection[] copiedSections = new LevelChunkSection[sections.length];
 
         for (int i = 0; i < sections.length; i++) {
+            if (i < minSection || i > maxSection) {
+                copiedSections[i] = null;
+                continue;
+            }
             final LevelChunkSection section = sections[i];
             copiedSections[i] = (section != null) ? section.copy() : createEmptySection(level);
         }
@@ -200,21 +207,23 @@ public class BlockChanger {
      * @param newSections the sections to apply
      * @param level       server level used to create empty sections when needed
      */
-    private static void setSections(final ChunkAccess chunkAccess, final LevelChunkSection[] newSections, final ServerLevel level) {
+    private static void setSections(final ChunkAccess chunkAccess,
+                                    final LevelChunkSection[] newSections,
+                                    final ServerLevel level) {
         final LevelChunkSection[] currentSections = chunkAccess.getSections();
 
         if (currentSections.length != newSections.length) {
             throw new IllegalArgumentException("Section count mismatch: expected "
-                    + currentSections.length + ", but got " + newSections.length);
+                + currentSections.length + ", but got " + newSections.length);
         }
 
         IntStream.range(0, currentSections.length).parallel().forEach(i -> {
+            final LevelChunkSection newSection = newSections[i];
+
+            if (newSection == null) return;
+
             LevelChunkSection section = currentSections[i];
-            LevelChunkSection newSection = newSections[i];
-
             if (section == null) section = createEmptySection(level);
-
-            if (newSection == null) newSection = createEmptySection(level);
 
             if (section.hasOnlyAir() && newSection.hasOnlyAir()) return;
 
@@ -546,14 +555,19 @@ public class BlockChanger {
     }
 
 
-    public static void paste(World world, CuboidSnapshot snapshot) {
+    public static void paste(World world, CuboidSnapshot snapshot, boolean updateLighting) {
         for (Map.Entry<Chunk, ChunkSectionSnapshot> entry : snapshot.getSnapshots().entrySet()) {
             final ChunkSectionSnapshot chunkSnapshot = entry.getValue();
             final ChunkPos pos = chunkSnapshot.position();
-            final int x = pos.x;
-            final int z = pos.z;
 
-            world.getChunkAtAsync(x, z, true, true).thenAccept(chunk -> BlockChanger.restoreChunkBlockSnapshot(chunk, chunkSnapshot, false).thenRun(() -> BlockChanger.updateLighting(Set.of(chunk))));
+            world.getChunkAtAsync(pos.x, pos.z, true, true)
+                .thenAccept(chunk ->
+                    restoreChunkBlockSnapshot(chunk, chunkSnapshot, false)
+                        .thenRun(() -> {
+                            if (updateLighting) updateLighting(Set.of(chunk));
+                            else world.refreshChunk(chunk.getX(), chunk.getZ());
+                        })
+                );
         }
     }
 
