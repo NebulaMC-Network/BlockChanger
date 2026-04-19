@@ -63,7 +63,8 @@ public class VirtualWorld {
             }
         });
     }
+
     public void paste(CuboidSnapshot snapshot) {
-        BlockChanger.paste(getWorld(), snapshot);
+        BlockChanger.paste(getWorld(), snapshot, false);
     }
 }
