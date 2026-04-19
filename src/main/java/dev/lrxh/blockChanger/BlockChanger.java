@@ -126,8 +126,13 @@ public class BlockChanger {
         final Level level = craftChunk.getCraftWorld().getHandle();
         final LevelChunkSection[] sections = chunkAccess.getSections();
 
-        final int minSection = level.getSectionIndex(minY);
-        final int maxSection = level.getSectionIndex(maxY);
+        final int worldMinY = level.getMinY();
+        final int worldMaxY = level.getMaxY();
+        final int clampedMinY = Math.max(minY, worldMinY);
+        final int clampedMaxY = Math.min(maxY, worldMaxY - 1);
+
+        final int minSection = level.getSectionIndex(clampedMinY);
+        final int maxSection = level.getSectionIndex(clampedMaxY);
 
         final LevelChunkSection[] copiedSections = new LevelChunkSection[sections.length];
 
