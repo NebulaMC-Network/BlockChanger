@@ -12,9 +12,7 @@ import org.bukkit.World;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Comparator;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
 
@@ -62,6 +60,21 @@ public class VirtualWorld {
                 }
             }
         });
+    }
+
+    public CompletableFuture<Void> restore(CuboidSnapshot snapshot) {
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+
+        for (Map.Entry<Chunk, ChunkSectionSnapshot> entry : snapshot.getSnapshots().entrySet()) {
+            Chunk original = entry.getKey();
+            ChunkSectionSnapshot chunkSnapshot = entry.getValue();
+
+            futures.add(getWorld()
+                .getChunkAtAsync(original.getX(), original.getZ(), true, true)
+                .thenCompose(chunk -> BlockChanger.restoreChunkBlockSnapshot(chunk, chunkSnapshot, true)));
+        }
+
+        return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
     }
 
     public void paste(CuboidSnapshot snapshot) {
