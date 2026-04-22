@@ -31,10 +31,15 @@ public class VirtualWorld {
     public void unload() {
         try {
             level.getChunkSource().getDataStorage().close();
+        } catch (Exception ignored) {}
+
+        try {
             level.moonrise$getChunkTaskScheduler().chunkHolderManager.close(false, false);
+        } catch (Exception ignored) {}
+
+        try {
             level.levelStorageAccess.close();
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
 
         MinecraftServer.getServer().removeLevel(level);
         BlockChanger.removeVirtualWorld(this);
@@ -66,12 +71,14 @@ public class VirtualWorld {
         List<CompletableFuture<Void>> futures = new ArrayList<>();
 
         for (Map.Entry<Chunk, ChunkSectionSnapshot> entry : snapshot.getSnapshots().entrySet()) {
-            Chunk original = entry.getKey();
             ChunkSectionSnapshot chunkSnapshot = entry.getValue();
+            ChunkPos pos = chunkSnapshot.position();
 
             futures.add(getWorld()
-                .getChunkAtAsync(original.getX(), original.getZ(), true, true)
-                .thenCompose(chunk -> BlockChanger.restoreChunkBlockSnapshot(chunk, chunkSnapshot, true)));
+                    .getChunkAtAsync(pos.x, pos.z, true, true)
+                    .thenCompose(chunk -> BlockChanger.restoreChunkBlockSnapshot(chunk, chunkSnapshot, true)
+                            .thenRun(() -> getWorld().refreshChunk(pos.x, pos.z)))
+            );
         }
 
         return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
