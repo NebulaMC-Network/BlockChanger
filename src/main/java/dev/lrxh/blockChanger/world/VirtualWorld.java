@@ -3,11 +3,16 @@ package dev.lrxh.blockChanger.world;
 import dev.lrxh.blockChanger.BlockChanger;
 import dev.lrxh.blockChanger.snapshot.ChunkSectionSnapshot;
 import dev.lrxh.blockChanger.snapshot.CuboidSnapshot;
+import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
 import org.bukkit.Chunk;
 import org.bukkit.World;
+import org.bukkit.craftbukkit.CraftChunk;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -78,6 +83,37 @@ public class VirtualWorld {
                     .getChunkAtAsync(pos.x, pos.z, true, true)
                     .thenCompose(chunk -> BlockChanger.restoreChunkBlockSnapshot(chunk, chunkSnapshot, true)
                             .thenRun(() -> getWorld().refreshChunk(pos.x, pos.z)))
+            );
+        }
+
+        return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+    }
+
+    public CompletableFuture<Void> restoreAndResync(CuboidSnapshot snapshot, List<ServerPlayer> players) {
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+
+        for (Map.Entry<Chunk, ChunkSectionSnapshot> entry : snapshot.getSnapshots().entrySet()) {
+            ChunkSectionSnapshot chunkSnapshot = entry.getValue();
+            ChunkPos pos = chunkSnapshot.position();
+
+            futures.add(
+                getWorld().getChunkAtAsync(pos.x, pos.z, true, true)
+                    .thenCompose(chunk ->
+                        BlockChanger.restoreChunkBlockSnapshot(chunk, chunkSnapshot, true)
+                            .thenRunAsync(() -> {
+                                LevelChunk levelChunk = (LevelChunk) ((CraftChunk) chunk).getHandle(ChunkStatus.FULL);
+                                ClientboundLevelChunkWithLightPacket packet = new ClientboundLevelChunkWithLightPacket(
+                                    levelChunk,
+                                    level.getLightEngine(),
+                                    null,
+                                    null
+                                );
+                                for (ServerPlayer player : players) {
+                                    player.connection.send(packet);
+                                }
+                                getWorld().refreshChunk(pos.x, pos.z);
+                            }, BlockChanger.EXECUTOR)
+                    )
             );
         }
 
