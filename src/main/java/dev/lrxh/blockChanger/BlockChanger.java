@@ -566,13 +566,18 @@ public class BlockChanger {
             final ChunkPos pos = chunkSnapshot.position();
 
             world.getChunkAtAsync(pos.x, pos.z, true, true)
-                .thenAccept(chunk ->
-                    restoreChunkBlockSnapshot(chunk, chunkSnapshot, false)
-                        .thenRun(() -> {
-                            if (updateLighting) updateLighting(Set.of(chunk));
-                            else world.refreshChunk(chunk.getX(), chunk.getZ());
-                        })
-                );
+                    .thenAccept(chunk ->
+                            restoreChunkBlockSnapshot(chunk, chunkSnapshot, false)
+                                    .thenRun(() -> {
+                                        if (updateLighting) {
+                                            updateLighting(Set.of(chunk));
+                                        } else {
+                                            Bukkit.getScheduler().getMainThreadExecutor(plugin).execute(() ->
+                                                    world.refreshChunk(chunk.getX(), chunk.getZ())
+                                            );
+                                        }
+                                    })
+                    );
         }
     }
 
@@ -619,7 +624,11 @@ public class BlockChanger {
                     Chunk chunk = entry.getKey();
                     ChunkSectionSnapshot section = entry.getValue();
                     return restoreChunkBlockSnapshot(chunk, section, clearEntities)
-                            .thenRun(() -> chunk.getWorld().refreshChunk(chunk.getX(), chunk.getZ()));
+                            .thenRun(() ->
+                                    Bukkit.getScheduler().getMainThreadExecutor(plugin).execute(() ->
+                                            chunk.getWorld().refreshChunk(chunk.getX(), chunk.getZ())
+                                    )
+                            );
                 })
                 .toArray(CompletableFuture[]::new);
 
