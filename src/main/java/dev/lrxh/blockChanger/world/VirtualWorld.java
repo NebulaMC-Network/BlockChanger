@@ -10,6 +10,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
+import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.World;
 import org.bukkit.craftbukkit.CraftChunk;
@@ -34,27 +35,19 @@ public class VirtualWorld {
     }
 
     public void unload() {
-        try {
-            level.getChunkSource().getDataStorage().close();
-        } catch (Exception ignored) {}
+        Bukkit.getScheduler().getMainThreadExecutor(BlockChanger.getPlugin()).execute(() -> {
+            try { level.getChunkSource().getDataStorage().close(); } catch (Exception ignored) {}
+            try { level.moonrise$getChunkTaskScheduler().chunkHolderManager.close(false, false); } catch (Exception ignored) {}
+            try { level.levelStorageAccess.close(); } catch (Exception ignored) {}
 
-        try {
-            level.moonrise$getChunkTaskScheduler().chunkHolderManager.close(false, false);
-        } catch (Exception ignored) {}
+            MinecraftServer.getServer().removeLevel(level);
+            BlockChanger.removeVirtualWorld(this);
 
-        try {
-            level.levelStorageAccess.close();
-        } catch (Exception ignored) {}
+            Path worldPath = MinecraftServer.getServer()
+                    .server.getWorldContainer()
+                    .toPath()
+                    .resolve(level.getWorld().getName());
 
-        MinecraftServer.getServer().removeLevel(level);
-        BlockChanger.removeVirtualWorld(this);
-
-        Path worldPath = MinecraftServer.getServer()
-                .server.getWorldContainer()
-                .toPath()
-                .resolve(level.getWorld().getName());
-
-        CompletableFuture.runAsync(() -> {
             if (Files.exists(worldPath)) {
                 try (Stream<Path> paths = Files.walk(worldPath)) {
                     paths.sorted(Comparator.reverseOrder())
@@ -82,7 +75,8 @@ public class VirtualWorld {
             futures.add(getWorld()
                     .getChunkAtAsync(pos.x, pos.z, true, true)
                     .thenCompose(chunk -> BlockChanger.restoreChunkBlockSnapshot(chunk, chunkSnapshot, true)
-                            .thenRun(() -> getWorld().refreshChunk(pos.x, pos.z)))
+                            .thenRun(() -> Bukkit.getScheduler().getMainThreadExecutor(BlockChanger.getPlugin()).execute(
+                                    () -> getWorld().refreshChunk(pos.x, pos.z))))
             );
         }
 
@@ -100,7 +94,7 @@ public class VirtualWorld {
                 getWorld().getChunkAtAsync(pos.x, pos.z, true, true)
                     .thenCompose(chunk ->
                         BlockChanger.restoreChunkBlockSnapshot(chunk, chunkSnapshot, true)
-                            .thenRunAsync(() -> {
+                            .thenRun(() -> Bukkit.getScheduler().getMainThreadExecutor(BlockChanger.getPlugin()).execute(() -> {
                                 LevelChunk levelChunk = (LevelChunk) ((CraftChunk) chunk).getHandle(ChunkStatus.FULL);
                                 ClientboundLevelChunkWithLightPacket packet = new ClientboundLevelChunkWithLightPacket(
                                     levelChunk,
@@ -112,7 +106,7 @@ public class VirtualWorld {
                                     player.connection.send(packet);
                                 }
                                 getWorld().refreshChunk(pos.x, pos.z);
-                            }, BlockChanger.EXECUTOR)
+                            }))
                     )
             );
         }
@@ -120,7 +114,7 @@ public class VirtualWorld {
         return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
     }
 
-    public void paste(CuboidSnapshot snapshot) {
-        BlockChanger.paste(getWorld(), snapshot, false);
+    public CompletableFuture<Void> paste(CuboidSnapshot snapshot) {
+        return BlockChanger.paste(getWorld(), snapshot, false);
     }
 }

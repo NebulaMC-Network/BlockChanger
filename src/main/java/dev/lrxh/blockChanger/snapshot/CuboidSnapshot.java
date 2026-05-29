@@ -22,12 +22,21 @@ public class CuboidSnapshot {
     }
 
     public static CompletableFuture<CuboidSnapshot> create(final Location pos1, final Location pos2) {
+        if (pos1 == null || pos2 == null) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("Locations cannot be null"));
+        }
+        if (pos1.getWorld() == null || pos2.getWorld() == null) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("Locations must have a world"));
+        }
+        if (!pos1.getWorld().equals(pos2.getWorld())) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("Locations must be in the same world"));
+        }
         final World world = pos1.getWorld();
 
-        final int minChunkX = Math.min(pos1.getChunk().getX(), pos2.getChunk().getX());
-        final int maxChunkX = Math.max(pos1.getChunk().getX(), pos2.getChunk().getX());
-        final int minChunkZ = Math.min(pos1.getChunk().getZ(), pos2.getChunk().getZ());
-        final int maxChunkZ = Math.max(pos1.getChunk().getZ(), pos2.getChunk().getZ());
+        final int minChunkX = Math.min(pos1.getBlockX() >> 4, pos2.getBlockX() >> 4);
+        final int maxChunkX = Math.max(pos1.getBlockX() >> 4, pos2.getBlockX() >> 4);
+        final int minChunkZ = Math.min(pos1.getBlockZ() >> 4, pos2.getBlockZ() >> 4);
+        final int maxChunkZ = Math.max(pos1.getBlockZ() >> 4, pos2.getBlockZ() >> 4);
 
         final int minY = Math.min(pos1.getBlockY(), pos2.getBlockY());
         final int maxY = Math.max(pos1.getBlockY(), pos2.getBlockY());
