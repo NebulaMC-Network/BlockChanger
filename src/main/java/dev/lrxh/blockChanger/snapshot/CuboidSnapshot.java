@@ -29,8 +29,8 @@ public class CuboidSnapshot {
         final int minChunkZ = Math.min(pos1.getChunk().getZ(), pos2.getChunk().getZ());
         final int maxChunkZ = Math.max(pos1.getChunk().getZ(), pos2.getChunk().getZ());
 
-        final int minY = Math.min(pos1.getBlockY(), pos2.getBlockY());
-        final int maxY = Math.max(pos1.getBlockY(), pos2.getBlockY());
+        final int minY = world.getMinHeight();
+        final int maxY = world.getMaxHeight();
 
         final int totalChunks = (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1);
 

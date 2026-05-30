@@ -126,23 +126,19 @@ public class BlockChanger {
         final Level level = craftChunk.getCraftWorld().getHandle();
         final LevelChunkSection[] sections = chunkAccess.getSections();
 
-        final int worldMinY = level.getMinY();
-        final int worldMaxY = level.getMaxY();
-        final int clampedMinY = Math.max(minY, worldMinY);
-        final int clampedMaxY = Math.min(maxY, worldMaxY - 1);
-
-        final int minSection = level.getSectionIndex(clampedMinY);
-        final int maxSection = level.getSectionIndex(clampedMaxY);
+        // log("[SNAPSHOT] Chunk " + position + " | totalSections=" + sections.length +
+        //        " | worldMinY=" + level.getMinY() + " worldMaxY=" + level.getMaxY());
 
         final LevelChunkSection[] copiedSections = new LevelChunkSection[sections.length];
-
         for (int i = 0; i < sections.length; i++) {
-            if (i < minSection || i > maxSection) {
-                copiedSections[i] = null;
-                continue;
-            }
             final LevelChunkSection section = sections[i];
             copiedSections[i] = (section != null) ? section.copy() : createEmptySection(level);
+
+            int sectionBottomY = level.getMinY() + (i * 16);
+            boolean hasBlocks = !copiedSections[i].hasOnlyAir();
+            if (hasBlocks) {
+                // log("[SNAPSHOT] Chunk " + position + " section[" + i + "] Y=" + sectionBottomY + ".." + (sectionBottomY + 15) + " | HAS_BLOCKS");
+            }
         }
 
         return new ChunkSectionSnapshot(copiedSections, position);
@@ -177,27 +173,46 @@ public class BlockChanger {
         final CraftChunk craftChunk = (CraftChunk) chunk;
         final ChunkAccess chunkAccess = craftChunk.getHandle(ChunkStatus.FULL);
         final ServerLevel level = craftChunk.getCraftWorld().getHandle();
+        final LevelChunkSection[] newSections = snapshot.sections();
+        final LevelChunkSection[] currentSections = chunkAccess.getSections();
+
+        long snapshotBlocks = Arrays.stream(newSections).filter(s -> s != null && !s.hasOnlyAir()).count();
+        long currentBlocks = Arrays.stream(currentSections).filter(s -> s != null && !s.hasOnlyAir()).count();
+
+        // log("[RESTORE] Chunk " + snapshot.position() +
+        //         " | snapshotNonAir=" + snapshotBlocks +
+        //         " | currentNonAir=" + currentBlocks);
+
+        for (int i = 0; i < newSections.length; i++) {
+            LevelChunkSection ns = newSections[i];
+            LevelChunkSection cs = (i < currentSections.length) ? currentSections[i] : null;
+            int sectionBottomY = level.getMinY() + (i * 16);
+
+            boolean snapshotHasBlocks = ns != null && !ns.hasOnlyAir();
+            boolean currentHasBlocks = cs != null && !cs.hasOnlyAir();
+
+            // Only log sections where there's something meaningful happening
+            if (snapshotHasBlocks || currentHasBlocks) {
+                // log("[RESTORE] Chunk " + snapshot.position() + " section[" + i + "] Y=" + sectionBottomY + ".." + (sectionBottomY + 15) +
+                //         " | snapshot=" + (snapshotHasBlocks ? "HAS_BLOCKS" : "AIR") +
+                //         " | current=" + (currentHasBlocks ? "HAS_BLOCKS" : "AIR"));
+            }
+        }
 
         if (clearEntities) {
             chunkAccess.blockEntities.clear();
-
             final int chunkX = chunk.getX();
             final int chunkZ = chunk.getZ();
-
             for (final Entity entity : craftChunk.getCraftWorld().getHandle().moonrise$getEntityLookup().getAll()) {
-                if (entity instanceof Player)
-                    continue;
-
+                if (entity instanceof Player) continue;
                 final int entityChunkX = (int) Math.floor(entity.getX()) >> 4;
                 final int entityChunkZ = (int) Math.floor(entity.getZ()) >> 4;
-
                 if (entityChunkX == chunkX && entityChunkZ == chunkZ) {
                     Bukkit.getScheduler().getMainThreadExecutor(plugin).execute(() -> entity.remove(Entity.RemovalReason.DISCARDED));
                 }
             }
         }
 
-        final LevelChunkSection[] newSections = snapshot.sections();
         setSections(chunkAccess, newSections, level);
     }
 
@@ -599,15 +614,15 @@ public class BlockChanger {
     /**
      * Asynchronously restore a saved cuboid snapshot.
      * <p>
-     * This schedules the restore on the shared executor and will also trigger lighting updates
-     * for all affected chunks after restoring.
+     * This schedules chunk restores and completes once all chunks are restored and lighting
+     * updates have been triggered for the affected chunks.
      *
      * @param snapshot      cuboid snapshot containing multiple chunk snapshots
      * @param clearEntities whether to clear non-player entities when restoring
-     * @return a CompletableFuture that completes when the restore begins
+     * @return a CompletableFuture that completes when the restore finishes
      */
     public static CompletableFuture<Void> restoreCuboidSnapshotAsync(final CuboidSnapshot snapshot, final boolean clearEntities) {
-        return CompletableFuture.runAsync(() -> restoreCuboidSnapshot(snapshot, clearEntities));
+        return restoreCuboidSnapshotInternal(snapshot, clearEntities);
     }
 
     /**
@@ -619,21 +634,42 @@ public class BlockChanger {
      * @param clearEntities whether to clear non-player entities during restore
      */
     public static void restoreCuboidSnapshot(final CuboidSnapshot snapshot, final boolean clearEntities) {
-        CompletableFuture<?>[] futures = snapshot.getSnapshots().entrySet().stream()
-                .map(entry -> {
-                    Chunk chunk = entry.getKey();
-                    ChunkSectionSnapshot section = entry.getValue();
-                    return restoreChunkBlockSnapshot(chunk, section, clearEntities)
+        restoreCuboidSnapshotInternal(snapshot, clearEntities);
+    }
+
+    private static CompletableFuture<Void> restoreCuboidSnapshotInternal(final CuboidSnapshot snapshot, final boolean clearEntities) {
+        if (snapshot.getSnapshots().isEmpty()) {
+            // log("Snapshot is empty, skipping restore.");
+            return CompletableFuture.completedFuture(null);
+        }
+
+        List<CompletableFuture<Chunk>> chunkFutures = new ArrayList<>(snapshot.getSnapshots().size());
+        List<CompletableFuture<Void>> restoreFutures = new ArrayList<>(snapshot.getSnapshots().size());
+
+        for (Map.Entry<Chunk, ChunkSectionSnapshot> entry : snapshot.getSnapshots().entrySet()) {
+            ChunkSectionSnapshot section = entry.getValue();
+            ChunkPos pos = section.position();
+            World world = entry.getKey().getWorld();
+
+            CompletableFuture<Chunk> chunkFuture = world.getChunkAtAsync(pos.x, pos.z, true, true);
+            chunkFutures.add(chunkFuture);
+
+            restoreFutures.add(chunkFuture.thenCompose(chunk ->
+                    restoreChunkBlockSnapshot(chunk, section, clearEntities)
                             .thenRun(() ->
                                     Bukkit.getScheduler().getMainThreadExecutor(plugin).execute(() ->
                                             chunk.getWorld().refreshChunk(chunk.getX(), chunk.getZ())
                                     )
-                            );
-                })
-                .toArray(CompletableFuture[]::new);
+                            )
+            ));
+        }
 
-        CompletableFuture.allOf(futures)
-                .thenRun(() -> LightingService.updateLighting(snapshot.getSnapshots().keySet(), false));
+        return CompletableFuture.allOf(restoreFutures.toArray(new CompletableFuture[0]))
+                .thenApply(v -> chunkFutures.stream()
+                        .map(f -> f.getNow(null))
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.toSet()))
+                .thenAccept(chunks -> LightingService.updateLighting(chunks, false));
     }
 
     @InternalApi
