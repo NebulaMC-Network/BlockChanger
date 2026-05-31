@@ -1,7 +1,7 @@
 package dev.lrxh.blockChanger.snapshot;
 
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.level.ChunkPos;
-import net.minecraft.world.level.chunk.LevelChunkSection;
 
-public record ChunkSectionSnapshot(LevelChunkSection[] sections, ChunkPos position) {
+public record ChunkSectionSnapshot(CompoundTag nbt, ChunkPos position) {
 }

@@ -21,10 +21,11 @@ import net.minecraft.server.WorldLoader;
 import net.minecraft.server.dedicated.DedicatedServerProperties;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.util.BitStorage;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
 import net.minecraft.util.GsonHelper;
 import net.minecraft.world.Difficulty;
-import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.player.Player;
+
 import net.minecraft.world.level.*;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeManager;
@@ -32,7 +33,10 @@ import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.border.WorldBorder;
 import net.minecraft.world.level.chunk.*;
+import net.minecraft.world.level.chunk.storage.RegionStorageInfo;
+import net.minecraft.world.level.chunk.storage.SerializableChunkData;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.dimension.LevelStem;
 import net.minecraft.world.level.gamerules.GameRules;
 import net.minecraft.world.level.levelgen.WorldDimensions;
@@ -56,7 +60,6 @@ import java.lang.reflect.Field;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 @SuppressWarnings("unused")
 public class BlockChanger {
@@ -110,145 +113,129 @@ public class BlockChanger {
     }
 
     /**
-     * Create a snapshot of the block data for a whole chunk.
+     * Create a snapshot of a whole chunk using NBT serialization.
      * <p>
-     * This copies each LevelChunkSection so the returned snapshot is safe to store
-     * and later restore without being affected by further chunk changes.
+     * This uses {@link SerializableChunkData#copyOf} to deep-copy the entire chunk state
+     * (sections, block entities, heightmaps) into an NBT tag. The returned snapshot is safe
+     * to store and later restore without being affected by further chunk changes.
+     * <p>
+     * <b>Must be called on the main thread.</b>
      *
      * @param chunk the Bukkit chunk to snapshot
-     * @return a {@link ChunkSectionSnapshot} containing copied sections and the chunk position
+     * @return a {@link ChunkSectionSnapshot} containing the serialized chunk NBT and position
      */
     @InternalApi
     public static ChunkSectionSnapshot createChunkBlockSnapshot(final Chunk chunk, final int minY, final int maxY) {
-        final CraftChunk craftChunk = (CraftChunk) chunk;
-        final ChunkAccess chunkAccess = craftChunk.getHandle(ChunkStatus.FULL);
-        final ChunkPos position = chunkAccess.getPos();
-        final Level level = craftChunk.getCraftWorld().getHandle();
-        final LevelChunkSection[] sections = chunkAccess.getSections();
-
-        // log("[SNAPSHOT] Chunk " + position + " | totalSections=" + sections.length +
-        //        " | worldMinY=" + level.getMinY() + " worldMaxY=" + level.getMaxY());
-
-        final LevelChunkSection[] copiedSections = new LevelChunkSection[sections.length];
-        for (int i = 0; i < sections.length; i++) {
-            final LevelChunkSection section = sections[i];
-            copiedSections[i] = (section != null) ? section.copy() : createEmptySection(level);
-
-            int sectionBottomY = level.getMinY() + (i * 16);
-            boolean hasBlocks = !copiedSections[i].hasOnlyAir();
-            if (hasBlocks) {
-                // log("[SNAPSHOT] Chunk " + position + " section[" + i + "] Y=" + sectionBottomY + ".." + (sectionBottomY + 15) + " | HAS_BLOCKS");
-            }
+        if (!Bukkit.isPrimaryThread()) {
+            throw new IllegalStateException("createChunkBlockSnapshot must be called on the main thread");
         }
 
-        return new ChunkSectionSnapshot(copiedSections, position);
+        final CraftChunk craftChunk = (CraftChunk) chunk;
+        final ServerLevel level = craftChunk.getCraftWorld().getHandle();
+        final LevelChunk levelChunk = level.getChunk(chunk.getX(), chunk.getZ());
+        final ChunkPos position = levelChunk.getPos();
+
+        final SerializableChunkData data = SerializableChunkData.copyOf(level, levelChunk);
+        final CompoundTag tag = data.write();
+
+        return new ChunkSectionSnapshot(tag, position);
     }
 
     /**
-     * Asynchronously restore a chunk from a snapshot.
+     * Restore a chunk from an NBT snapshot.
      * <p>
-     * This will restore the chunk back to its state when it was copied If {@code clearEntities} is true,
-     * non-player entities in the chunk will be removed and existing block-entity data cleared.
+     * All NMS mutation is performed on the server main thread for thread-safety.
+     * Non-player entities are optionally removed before the restore.
+     * The chunk is properly re-synced to nearby players after restore.
      *
      * @param chunk         the Bukkit chunk to restore
-     * @param snapshot      snapshot to restore from
-     * @param clearEntities true to clear non-player entities and block entities
-     * @return a CompletableFuture that completes when the restore task finishes
+     * @param snapshot      NBT snapshot to restore from
+     * @param clearEntities true to clear non-player entities
+     * @return a CompletableFuture that completes when the restore finishes
      */
     @InternalApi
     public static CompletableFuture<Void> restoreChunkBlockSnapshot(final Chunk chunk, final ChunkSectionSnapshot snapshot,
                                                                     final boolean clearEntities) {
-        return CompletableFuture.runAsync(() -> _restoreChunkBlockSnapshot(chunk, snapshot, clearEntities));
+        final CompletableFuture<Void> future = new CompletableFuture<>();
+        Bukkit.getScheduler().getMainThreadExecutor(plugin).execute(() -> {
+            try {
+                _restoreChunkBlockSnapshot(chunk, snapshot, clearEntities);
+                future.complete(null);
+            } catch (Exception e) {
+                plugin.getLogger().log(java.util.logging.Level.SEVERE, "Failed to restore chunk snapshot", e);
+                future.completeExceptionally(e);
+            }
+        });
+        return future;
     }
 
     /**
-     * Internal restore implementation. This is the synchronous work that performs the actual
-     * section replacement and optional entity clearing. Intended to be called on a worker thread.
-     *
-     * @param chunk         the Bukkit chunk to restore
-     * @param snapshot      snapshot to restore from
-     * @param clearEntities whether to clear entities and block entities in the chunk
+     * Internal restore implementation. Must run on the main thread.
      */
     private static void _restoreChunkBlockSnapshot(final Chunk chunk, final ChunkSectionSnapshot snapshot, final boolean clearEntities) {
         final CraftChunk craftChunk = (CraftChunk) chunk;
-        final ChunkAccess chunkAccess = craftChunk.getHandle(ChunkStatus.FULL);
         final ServerLevel level = craftChunk.getCraftWorld().getHandle();
-        final LevelChunkSection[] newSections = snapshot.sections();
-        final LevelChunkSection[] currentSections = chunkAccess.getSections();
+        final ChunkPos position = snapshot.position();
 
-        long snapshotBlocks = Arrays.stream(newSections).filter(s -> s != null && !s.hasOnlyAir()).count();
-        long currentBlocks = Arrays.stream(currentSections).filter(s -> s != null && !s.hasOnlyAir()).count();
-
-        // log("[RESTORE] Chunk " + snapshot.position() +
-        //         " | snapshotNonAir=" + snapshotBlocks +
-        //         " | currentNonAir=" + currentBlocks);
-
-        for (int i = 0; i < newSections.length; i++) {
-            LevelChunkSection ns = newSections[i];
-            LevelChunkSection cs = (i < currentSections.length) ? currentSections[i] : null;
-            int sectionBottomY = level.getMinY() + (i * 16);
-
-            boolean snapshotHasBlocks = ns != null && !ns.hasOnlyAir();
-            boolean currentHasBlocks = cs != null && !cs.hasOnlyAir();
-
-            // Only log sections where there's something meaningful happening
-            if (snapshotHasBlocks || currentHasBlocks) {
-                // log("[RESTORE] Chunk " + snapshot.position() + " section[" + i + "] Y=" + sectionBottomY + ".." + (sectionBottomY + 15) +
-                //         " | snapshot=" + (snapshotHasBlocks ? "HAS_BLOCKS" : "AIR") +
-                //         " | current=" + (currentHasBlocks ? "HAS_BLOCKS" : "AIR"));
-            }
+        final CompoundTag tag = snapshot.nbt();
+        final SerializableChunkData scd = SerializableChunkData.parse(level, level.palettedContainerFactory(), tag);
+        if (scd == null) {
+            log("Parsed SerializableChunkData is null for chunk " + position.x + "," + position.z);
+            return;
         }
+
+        final RegionStorageInfo storageInfo = new RegionStorageInfo(
+                level.getWorld().getName(), level.dimension(), "chunk");
+        final ProtoChunk proto = scd.read(level, level.getPoiManager(), storageInfo, position);
+
+        if (!(proto instanceof ImposterProtoChunk imposter)) {
+            log("Chunk " + position.x + "," + position.z + " not a LevelChunk — skipping");
+            return;
+        }
+
+        final LevelChunk liveChunk = (LevelChunk) ((CraftChunk) chunk).getHandle(ChunkStatus.FULL);
 
         if (clearEntities) {
-            chunkAccess.blockEntities.clear();
-            final int chunkX = chunk.getX();
-            final int chunkZ = chunk.getZ();
-            for (final Entity entity : craftChunk.getCraftWorld().getHandle().moonrise$getEntityLookup().getAll()) {
-                if (entity instanceof Player) continue;
-                final int entityChunkX = (int) Math.floor(entity.getX()) >> 4;
-                final int entityChunkZ = (int) Math.floor(entity.getZ()) >> 4;
-                if (entityChunkX == chunkX && entityChunkZ == chunkZ) {
-                    Bukkit.getScheduler().getMainThreadExecutor(plugin).execute(() -> entity.remove(Entity.RemovalReason.DISCARDED));
-                }
-            }
+            clearEntitiesInChunk(chunk);
         }
 
-        setSections(chunkAccess, newSections, level);
+        swapSections(liveChunk, imposter.getWrapped());
+
+        // Re-sync chunk to players
+        level.getChunkSource().chunkMap
+                .getPlayers(position, false)
+                .forEach(sp -> sp.connection.send(
+                        new ClientboundLevelChunkWithLightPacket(
+                                liveChunk, level.getLightEngine(), null, null)));
     }
 
-    /**
-     * Replace the sections in a {@link ChunkAccess} with the provided sections.
-     * <p>
-     * Any null sections are replaced with empty sections. If both current and new sections
-     * are air-only, they are left untouched. This method validates section count and
-     * performs the replacement in parallel for speed.
-     *
-     * @param chunkAccess the chunk to modify
-     * @param newSections the sections to apply
-     * @param level       server level used to create empty sections when needed
-     */
-    private static void setSections(final ChunkAccess chunkAccess,
-                                    final LevelChunkSection[] newSections,
-                                    final ServerLevel level) {
-        final LevelChunkSection[] currentSections = chunkAccess.getSections();
+    private static void clearEntitiesInChunk(final Chunk chunk) {
+        final org.bukkit.World world = chunk.getWorld();
+        if (!world.isChunkLoaded(chunk.getX(), chunk.getZ())) return;
 
-        if (currentSections.length != newSections.length) {
-            throw new IllegalArgumentException("Section count mismatch: expected "
-                + currentSections.length + ", but got " + newSections.length);
+        for (final org.bukkit.entity.Entity entity : chunk.getEntities()) {
+            if (entity.getType() == org.bukkit.entity.EntityType.PLAYER) continue;
+            entity.remove();
+        }
+    }
+
+    private static void swapSections(final LevelChunk dst, final LevelChunk src) {
+        final LevelChunkSection[] srcSec = src.getSections();
+        final LevelChunkSection[] dstSec = dst.getSections();
+        for (int i = 0; i < srcSec.length && i < dstSec.length; i++) {
+            dstSec[i] = srcSec[i];
         }
 
-        IntStream.range(0, currentSections.length).parallel().forEach(i -> {
-            final LevelChunkSection newSection = newSections[i];
+        dst.getBlockEntities().clear();
+        dst.getBlockEntities().putAll(src.getBlockEntities());
 
-            if (newSection == null) return;
+        Heightmap.primeHeightmaps(dst, EnumSet.of(
+                Heightmap.Types.WORLD_SURFACE,
+                Heightmap.Types.OCEAN_FLOOR,
+                Heightmap.Types.MOTION_BLOCKING,
+                Heightmap.Types.MOTION_BLOCKING_NO_LEAVES));
 
-            LevelChunkSection section = currentSections[i];
-            if (section == null) section = createEmptySection(level);
-
-            if (section.hasOnlyAir() && newSection.hasOnlyAir()) return;
-
-            currentSections[i] = newSection.copy();
-        });
+        dst.markUnsaved();
     }
 
     /**
@@ -581,15 +568,11 @@ public class BlockChanger {
             final ChunkPos pos = chunkSnapshot.position();
 
             world.getChunkAtAsync(pos.x, pos.z, true, true)
-                    .thenAccept(chunk ->
+                    .thenCompose(chunk ->
                             restoreChunkBlockSnapshot(chunk, chunkSnapshot, false)
                                     .thenRun(() -> {
                                         if (updateLighting) {
                                             updateLighting(Set.of(chunk));
-                                        } else {
-                                            Bukkit.getScheduler().getMainThreadExecutor(plugin).execute(() ->
-                                                    world.refreshChunk(chunk.getX(), chunk.getZ())
-                                            );
                                         }
                                     })
                     );
@@ -656,11 +639,6 @@ public class BlockChanger {
 
             restoreFutures.add(chunkFuture.thenCompose(chunk ->
                     restoreChunkBlockSnapshot(chunk, section, clearEntities)
-                            .thenRun(() ->
-                                    Bukkit.getScheduler().getMainThreadExecutor(plugin).execute(() ->
-                                            chunk.getWorld().refreshChunk(chunk.getX(), chunk.getZ())
-                                    )
-                            )
             ));
         }
 
@@ -670,6 +648,10 @@ public class BlockChanger {
                         .filter(Objects::nonNull)
                         .collect(Collectors.toSet()))
                 .thenAccept(chunks -> LightingService.updateLighting(chunks, false));
+    }
+
+    public static JavaPlugin getPlugin() {
+        return plugin;
     }
 
     @InternalApi

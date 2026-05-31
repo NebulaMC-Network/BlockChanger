@@ -36,9 +36,17 @@ public class CuboidSnapshot {
 
         return loadChunksAndSnapshots(totalChunks,
           (x, z) -> world.getChunkAtAsync(x, z)
-            .thenApplyAsync(chunk -> Map.entry(chunk,
-                BlockChanger.createChunkBlockSnapshot(chunk, minY, maxY)),
-              BlockChanger.EXECUTOR),
+            .thenCompose(chunk -> {
+                final CompletableFuture<Map.Entry<Chunk, ChunkSectionSnapshot>> future = new CompletableFuture<>();
+                org.bukkit.Bukkit.getScheduler().runTask(BlockChanger.getPlugin(), () -> {
+                    try {
+                        future.complete(Map.entry(chunk, BlockChanger.createChunkBlockSnapshot(chunk, minY, maxY)));
+                    } catch (Exception e) {
+                        future.completeExceptionally(e);
+                    }
+                });
+                return future;
+            }),
           minChunkX, maxChunkX, minChunkZ, maxChunkZ);
     }
 

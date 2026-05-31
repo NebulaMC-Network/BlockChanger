@@ -81,8 +81,7 @@ public class VirtualWorld {
 
             futures.add(getWorld()
                     .getChunkAtAsync(pos.x, pos.z, true, true)
-                    .thenCompose(chunk -> BlockChanger.restoreChunkBlockSnapshot(chunk, chunkSnapshot, true)
-                            .thenRun(() -> getWorld().refreshChunk(pos.x, pos.z)))
+                    .thenCompose(chunk -> BlockChanger.restoreChunkBlockSnapshot(chunk, chunkSnapshot, true))
             );
         }
 
@@ -111,7 +110,6 @@ public class VirtualWorld {
                                 for (ServerPlayer player : players) {
                                     player.connection.send(packet);
                                 }
-                                getWorld().refreshChunk(pos.x, pos.z);
                             }, BlockChanger.EXECUTOR)
                     )
             );
